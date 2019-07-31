@@ -30,9 +30,12 @@ public class BatchMiner {
      * @throws Exception
      */
     public static List<String> listSegments(String directory) throws Exception {
+        System.out.println("Listing segments...");
         Path path = Paths.get(directory);
 
-        List<String> segments = new ArrayList<>();
+        List<Observable<String>> theFilePipes = new ArrayList<>();
+        List<String> allSegments = new ArrayList<String>();
+        String header = "key";
 
         Files.walkFileTree(path, new FileVisitor<Path>() {
 
@@ -41,27 +44,45 @@ public class BatchMiner {
 
                 return FileVisitResult.CONTINUE;
             }
+
             @Override
             public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
                 return FileVisitResult.CONTINUE;
             }
+
             @Override
             public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                String segmentName = file.getFileName().toString();
-                segmentName = segmentName.substring(0, segmentName.length() - 4);
-                int index = segmentName.indexOf("!");
-                segmentName = segmentName.substring(0, index) + ':' + segmentName.substring(index + 1);
-                segments.add(segmentName);
+                String fileName = file.toString();
+                CSVReader reader = new CSVReader(new FileReader(fileName), ';');
+
+                Observable<String> csvFilePipe = Observable
+                        .fromIterable(reader)
+                        .filter((String[] csvRow) -> header.equals(csvRow[1]) == false)
+                        .distinct((String[] csvRow) -> csvRow[1])
+                        .map(csvRow -> {
+                            String segmentName = csvRow[1];
+                            return segmentName;
+                        });
+
+                theFilePipes.add(csvFilePipe);
 
                 return FileVisitResult.CONTINUE;
             }
+
             @Override
             public FileVisitResult visitFileFailed(Path file, IOException exc) throws IOException {
 //                    System.out.println("Visit Failed File: "+file);
                 return FileVisitResult.CONTINUE;
             }
+
         });
-        return segments;
+        // We have a pipe for each csv file
+        allSegments = Observable.merge(theFilePipes)
+                .distinct()
+                .toList()
+                .blockingGet();
+
+        return allSegments;
     }
 
     /**
@@ -73,9 +94,10 @@ public class BatchMiner {
      * @throws Exception
      */
     public static List<Trace> filterSegments(String directory, String segment) throws Exception {
+        System.out.println("\tListing observations...");
         Path path = Paths.get(directory);
 
-        List<Observable<Trace>> filePipes = new ArrayList<>();
+        List<Observable<Trace>> theFilePipes = new ArrayList<>();
         List<Trace> allTraces = new ArrayList<Trace>();
 
         Files.walkFileTree(path, new FileVisitor<Path>() {
@@ -85,47 +107,44 @@ public class BatchMiner {
 
                 return FileVisitResult.CONTINUE;
             }
+
             @Override
             public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
                 return FileVisitResult.CONTINUE;
             }
+
             @Override
             public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                String fileName = file.toString();
+                CSVReader reader = new CSVReader(new FileReader(fileName), ';');
 
-                String segmentName = file.getFileName().toString();
-                segmentName = segmentName.substring(0, segmentName.length() - 4);
-                int index = segmentName.indexOf("!");
-                segmentName = segmentName.substring(0, index) + ':' + segmentName.substring(index + 1);
+                Observable<Trace> csvFilePipe = Observable
+                        .fromIterable(reader)
+                        .filter((String[] csvRow) -> segment.equals(csvRow[1]))
+                        .map(csvRow -> {
+                            long start, duration;
+                            String caseID;
+                            caseID = csvRow[0];
+                            start = Long.parseLong(csvRow[2]);
+                            duration = Long.parseLong(csvRow[3]);
+                            Trace trace = new Trace(caseID, start, duration);
+                            return trace;
+                        });
 
-                if (segment.equals(segmentName)) {
+                theFilePipes.add(csvFilePipe);
 
-                    String fileName = file.toString();
-                    CSVReader reader = new CSVReader(new FileReader(fileName), ',');
-
-                    Observable<Trace> filePipe = Observable
-                            .fromIterable(reader)
-                            .filter((String[] csvRow) -> segment.equals(csvRow[1]))
-                            .map(csvRow -> {
-                                long start, duration;
-                                String caseID;
-                                caseID = csvRow[0];
-                                start = Long.parseLong(csvRow[2]);
-                                duration = Long.parseLong(csvRow[3]);
-                                Trace trace = new Trace(caseID, start, duration);
-                                return trace;
-                            });
-                    filePipes.add(filePipe);
-                }
                 return FileVisitResult.CONTINUE;
             }
+
             @Override
             public FileVisitResult visitFileFailed(Path file, IOException exc) throws IOException {
 //                    System.out.println("Visit Failed File: "+file);
                 return FileVisitResult.CONTINUE;
             }
-        });
 
-        allTraces = Observable.merge(filePipes)
+        });
+        // We have a pipe for each csv file
+        allTraces = Observable.merge(theFilePipes)
                 .toList()
                 .blockingGet();
 
@@ -183,6 +202,7 @@ public class BatchMiner {
      * @return
      */
     public static List<Batch> listBatches(List<Trace> allTraces, int minBatchSize) {
+        System.out.println("\tDetecting batches...");
         List<Batch> batches = new ArrayList<>();
         List<Trace> tracesInBatch = new ArrayList<>();
         Batch batch;
@@ -194,17 +214,23 @@ public class BatchMiner {
                 tracesInBatch.add(allTraces.get(i + 1));
                 if (i == allTraces.size() - 2 && tracesInBatch.size() >= minBatchSize) {
                     batch = new Batch(tracesInBatch);
+                    batch.setBatchID(batches.size() + 1);
                     batches.add(batch);
                     for (int j = 0; j < tracesInBatch.size(); j++) {
                         tracesInBatch.get(j).setBatched(true);
+                        tracesInBatch.get(j).setBatchID(batch.getBatchID());
+                        tracesInBatch.get(j).setQuartileWaitingTime(batch.getQuartileWaitingTime(1.0*tracesInBatch.get(j).getDuration()/3600000));
                     }
                 }
             } else {
                 if (tracesInBatch.size() >= minBatchSize) {
                     batch = new Batch(tracesInBatch);
+                    batch.setBatchID(batches.size() + 1);
                     batches.add(batch);
                     for (int j = 0; j < tracesInBatch.size(); j++) {
                         tracesInBatch.get(j).setBatched(true);
+                        tracesInBatch.get(j).setBatchID(batch.getBatchID());
+                        tracesInBatch.get(j).setQuartileWaitingTime(batch.getQuartileWaitingTime(1.0*tracesInBatch.get(j).getDuration()/3600000));
                     }
                 }
                 tracesInBatch.clear();
@@ -222,6 +248,7 @@ public class BatchMiner {
      * @return
      */
     public static List<Batch> listBatchesRounded(List<Trace> allTraces, int minBatchSize) {
+        System.out.println("\tDetecting batches...");
         List<Batch> batches = new ArrayList<>();
         List<Trace> tracesInBatch = new ArrayList<>();
         Batch batch;
@@ -233,17 +260,21 @@ public class BatchMiner {
                 tracesInBatch.add(allTraces.get(i + 1));
                 if (i == allTraces.size() - 2 && tracesInBatch.size() >= minBatchSize) {
                     batch = new Batch(tracesInBatch);
+                    batch.setBatchID(batches.size() + 1);
                     batches.add(batch);
                     for (int j = 0; j < tracesInBatch.size(); j++) {
                         tracesInBatch.get(j).setBatched(true);
+                        tracesInBatch.get(j).setBatchID(batch.getBatchID());
                     }
                 }
             } else {
                 if (tracesInBatch.size() >= minBatchSize) {
                     batch = new Batch(tracesInBatch);
+                    batch.setBatchID(batches.size() + 1);
                     batches.add(batch);
                     for (int j = 0; j < tracesInBatch.size(); j++) {
                         tracesInBatch.get(j).setBatched(true);
+                        tracesInBatch.get(j).setBatchID(batch.getBatchID());
                     }
                 }
                 tracesInBatch.clear();
@@ -313,6 +344,7 @@ public class BatchMiner {
      * @throws Exception
      */
     public static void calculateAndPrintSegmentStatistics(List<Segment> segments, String outputDirectory, long startTime) throws Exception {
+        System.out.println("Calculating and printing segment statistics...");
         String pathName = outputDirectory + "\\Statistics\\segment_statistics.csv";
 
         FileWriter fw = new FileWriter(pathName);
@@ -391,6 +423,7 @@ public class BatchMiner {
      * @throws Exception
      */
     public static void calculateAndPrintBatchStatistics(List<Segment> segments, String outputDirectory) throws Exception {
+        System.out.println("Calculating and printing batch statistics...");
         String pathName = outputDirectory + "\\Statistics\\batch_statistics.csv";
         FileWriter fw = new FileWriter(pathName);
         fw.write("segmentKey,i,k_i,t_{bi_dep},mu_{IBIA_i},sigma{IBIA_i},mu_{Wo_bi},sigma{Wo_bi},W_{i_min},W{i_max}");
@@ -452,13 +485,14 @@ public class BatchMiner {
      * @throws Exception
      */
     public static void segmentToCSVlog(List<Trace> traces, String name, String outputDirectory) throws Exception {
+        System.out.println("\tPrinting annotated log to CSV...");
         // This part changes all "/" to "_" in activity names to make them usable as filenames
         int index = name.indexOf("/");
         while (index >= 0) {
             name = name.substring(0, index) + '_' + name.substring(index + 1);
             index = name.indexOf("/");
         }
-        // This part of for BPI19 log, to delete ":" specifically following "SRM", to make sure the colon between activity names is preserved
+        // This part is for the BPI19 log, to delete ":" specifically following "SRM", to make sure the colon between activity names is preserved
         index = name.indexOf("SRM:");
         while (index >= 0) {
             name = name.substring(0, index + 3) + name.substring(index + 4);
@@ -506,6 +540,24 @@ public class BatchMiner {
         return executionTimeString;
     }
 
+    public static void printClassification(Segment segment) throws Exception {
+        System.out.println("\tPrinting quartile-based waiting time classification to CSV...");
+        FileWriter fw = new FileWriter("C:\\Users\\s111402\\OneDrive - TU Eindhoven\\Graduation Project\\Output Files\\Batch Classification\\traffic_fines_batchClassification_waitingTimeQuartile.csv");
+        fw.write("CaseID,class");
+        fw.write("\n");
+        List<Trace> traces = segment.getTraces();
+        for (int i = 0; i < traces.size(); i++) {
+            Trace trace = traces.get(i);
+            if (trace.getBatched()) {
+                fw.write(trace.getCaseID() + "," + trace.getQuartileWaitingTime() + "\n");
+            } else {
+                fw.write(trace.getCaseID() + "," + Double.NaN + "\n");
+            }
+        }
+        fw.flush();
+        fw.close();
+    }
+
     /**
      * Main method: uses segment identifier, directory name, time window and minimum batch size as input to detect
      * batches following a set of constraints, after which segment- and batching metrics are computed.
@@ -518,7 +570,7 @@ public class BatchMiner {
         final long startTime = System.currentTimeMillis();
 
         //Specify path of folder containing PSM data:
-        String inputDirectory = "C:\\Users\\s111402\\OneDrive - TU Eindhoven\\perf_mining_batch_processing\\input_test";
+        String inputDirectory = "C:\\Users\\s111402\\OneDrive - TU Eindhoven\\Capita Selecta\\PSM Data\\Road Fine";
 
         //Specify minimum batch size (integer):
         int minBatchSize = 20;
@@ -529,15 +581,15 @@ public class BatchMiner {
         //Specify directory path to store logs and statistics (directory must contain two folders called "Statistics" and "Logs"):
         String outputDirectory = "C:\\Users\\s111402\\OneDrive - TU Eindhoven\\perf_mining_batch_processing\\output_test";
 
-        List<String> allSegments = listSegments(inputDirectory);
-        System.out.println("Listing segments...");
+        List<String> allSegments = new ArrayList<>();
+        allSegments.add("Create Fine:Send Fine");
+//        List<String> allSegments = listSegments(inputDirectory);
 
         //Create list for segments
         List<Segment> segments = new ArrayList<>();
 
         for (int i = 0; i < allSegments.size(); i++) {
             System.out.println(allSegments.get(i).toUpperCase());
-            System.out.println("\tListing observations...");
             //Read all CSV files and filter to list
             List<Trace> allTraces = filterSegments(inputDirectory, allSegments.get(i));
 //            allTraces = filterTimeFrame(allTraces, segmentStart, segmentEnd);
@@ -556,33 +608,30 @@ public class BatchMiner {
                 List<Batch> batches;
 
                 // Different procedure for BPI17, using non-FIFO 12h time-window for batching
-//                if (log.equals("BPI2017") || log.equals("BPI2012")) {
                 if (nonFIFO.equals("y")) {
                     //Sort list of trace information first by end time, then by start time (for the actual batching)
                     System.out.println("\tSorting observations...");
                     allTraces.sort(Comparator.comparing(Trace::getEndRounded).thenComparing(Trace::getStart));
                     //List all batches based on algorithm
-                    System.out.println("\tDetecting batches...");
                     batches = listBatchesRounded(allTraces, minBatchSize);
                 } else {
                     System.out.println("\tSorting observations...");
                     allTraces.sort(Comparator.comparing(Trace::getEnd).thenComparing(Trace::getStart));
-                    System.out.println("\tDetecting batches...");
                     batches = listBatches(allTraces, minBatchSize);
                 }
 
                 //Create segment object based on traces and batches and add to list of segments
                 Segment segment = new Segment(allSegments.get(i), allTraces, batches, allCaseInterArrivalTimes);
                 segments.add(segment);
+
+                printClassification(segment);
+
                 // Uncomment below to print each segment to CSV separately:
-                System.out.println("\tPrinting annotated log to CSV...");
-                segmentToCSVlog(segment.getTraces(), segment.getName(), outputDirectory);
+//                segmentToCSVlog(segment.getTraces(), segment.getName(), outputDirectory);
             }
         }
-        System.out.println("Calculating and printing segment statistics...");
-        calculateAndPrintSegmentStatistics(segments, outputDirectory, startTime);
-        System.out.println("Calculating and printing batch statistics...");
-        calculateAndPrintBatchStatistics(segments, outputDirectory);
+//        calculateAndPrintSegmentStatistics(segments, outputDirectory, startTime);
+//        calculateAndPrintBatchStatistics(segments, outputDirectory);
 
         final long executionTime = System.currentTimeMillis() - startTime;
         String executionTimeString = String.format("%d min, %d sec",

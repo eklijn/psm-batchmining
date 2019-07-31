@@ -2,9 +2,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.OptionalDouble;
 import java.util.stream.DoubleStream;
+import org.apache.commons.math3.stat.descriptive.rank.Percentile;
 
 public class Batch {
     public int size;
+    public int batchID;
     public List<Trace> traces;
     public List<String> caseIDs;
     public double[] interArrivalTimes;
@@ -15,6 +17,10 @@ public class Batch {
     public double[] waitingTimes;
     //mean-, standard deviation-, minimum- and maximum waiting time
     public double meanWaitingTime; public double sdWaitingTime; public double maxWaitingTime; public double minWaitingTime;
+    //quartiles of waiting time
+    public double q1WaitingTime;
+    public double q2WaitingTime;
+    public double q3WaitingTime;
 
     public Batch(List<Trace> traces) {
         this.size = traces.size();
@@ -64,6 +70,13 @@ public class Batch {
         } else {
             this.minWaitingTime = Double.NaN;
         }
+
+        Percentile q1 = new Percentile();
+        Percentile q2 = new Percentile();
+        Percentile q3 = new Percentile();
+        this.q1WaitingTime = q1.evaluate(waitingTimes, 25);
+        this.q2WaitingTime = q2.evaluate(waitingTimes, 50);
+        this.q3WaitingTime = q3.evaluate(waitingTimes, 75);
     }
 
     /**
@@ -73,6 +86,14 @@ public class Batch {
      */
     public int getSize() {
         return size;
+    }
+
+    public void setBatchID(int batchID) {
+        this.batchID = batchID;
+    }
+
+    public int getBatchID() {
+        return batchID;
     }
 
     public List<Trace> getTraces() {
@@ -126,6 +147,20 @@ public class Batch {
 
     public void setSdWaitingTime(double sdWaitingTime) {
         this.sdWaitingTime = sdWaitingTime;
+    }
+
+    public int getQuartileWaitingTime(double waitingTime) {
+        int quartileWaitingTime;
+        if (waitingTime < this.q1WaitingTime) {
+            quartileWaitingTime = 1;
+        } else if (waitingTime < this.q2WaitingTime) {
+            quartileWaitingTime = 2;
+        } else if (waitingTime < this.q3WaitingTime) {
+            quartileWaitingTime = 3;
+        } else {
+            quartileWaitingTime = 4;
+        }
+        return quartileWaitingTime;
     }
 
     /**

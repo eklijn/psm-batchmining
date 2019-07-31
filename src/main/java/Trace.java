@@ -8,6 +8,7 @@ public class Trace implements Comparable<Trace> {
     public long end;
     public boolean batched;
     public int batchID;
+    public int quartileWaitingTime;
 
     public Trace(String caseID, long start, long duration) {
         this.caseID = caseID;
@@ -54,6 +55,22 @@ public class Trace implements Comparable<Trace> {
 
     public boolean getBatched() {
         return batched;
+    }
+
+    public void setBatchID(int batchID) {
+        this.batchID = batchID;
+    }
+
+    public int getBatchID() {
+        return batchID;
+    }
+
+    public void setQuartileWaitingTime(int quartileWaitingTime) {
+        this.quartileWaitingTime = quartileWaitingTime;
+    }
+
+    public int getQuartileWaitingTime() {
+        return quartileWaitingTime;
     }
 
     @Override
